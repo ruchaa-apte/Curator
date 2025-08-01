@@ -338,7 +338,7 @@ def process_page_images_pipeline(page_images: list[Image.Image | None], file_res
                 )
                 specific_classification = query_nemotron_for_image(
                     b64_cropped, classify_prompt
-                ).lower().strip().replace("'", "").replace('"', '')
+                ).lower().strip().replace("'", "").replace('"', "")
                 print(f"- VLM Classification: '{specific_classification}'")
 
                 analysis_path = "infographics" if "infographics" in specific_classification.lower() else "other"
