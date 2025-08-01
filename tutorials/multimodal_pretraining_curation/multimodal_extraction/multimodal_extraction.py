@@ -12,20 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import fitz  # PyMuPDF
 import base64
-from PIL import Image
-import pandas as pd
-import requests
 import io
 import json
+import os
 import shutil
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import fitz  # PyMuPDF
+import pandas as pd
+import requests
+from PIL import Image
 
 # Constants for configuration and paths
 SCRIPT_DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.path.join(SCRIPT_DIR_PATH, "source")
-EXTRACTION_DIR = os.path.join(SCRIPT_DIR_PATH, "extraction_results") 
+EXTRACTION_DIR = os.path.join(SCRIPT_DIR_PATH, "extraction_results")
 SEPARATED_MODALITY_DIR = os.path.join(SCRIPT_DIR_PATH, "categorized_results")
 NVAI_URL = "https://integrate.api.nvidia.com/v1"
 PDF_DPI = 300
@@ -33,7 +35,8 @@ PDF_DPI = 300
 # Set your NVIDIA_API_KEY as an environment variable
 API_KEY = os.environ.get("NVIDIA_API_KEY")
 if not API_KEY:
-    raise EnvironmentError("NVIDIA_API_KEY environment variable not set. Please set your API key before running this script.")
+    error_msg = "NVIDIA_API_KEY environment variable not set. Please set your API key before running this script."
+    raise OSError(error_msg)
 
 if os.path.exists(EXTRACTION_DIR):
     shutil.rmtree(EXTRACTION_DIR)
@@ -43,19 +46,22 @@ if os.path.exists(SEPARATED_MODALITY_DIR):
     shutil.rmtree(SEPARATED_MODALITY_DIR)
 os.makedirs(SEPARATED_MODALITY_DIR, exist_ok=True)
 
-def call_api(model: str, messages: list, max_tokens: int, tools: list = None):
+
+def call_api(
+    model: str, messages: List[Dict[str, Any]], max_tokens: int, tools: Optional[List[Dict[str, Any]]] = None
+) -> Optional[Dict[str, Any]]:
     """
     Make an API call to the NVIDIA AI chat completions endpoint.
-    
+
     Args:
         model (str): The model identifier to use for the API call (e.g., "nvidia/llama-3.1-nemotron-nano-vl-8b-v1")
         messages (list): List of message dictionaries containing the conversation history
         max_tokens (int): Maximum number of tokens to generate in the response
         tools (list, optional): List of tool definitions to enable function calling. Defaults to None.
-    
+
     Returns:
         dict or None: JSON response from the API if successful, None if an error occurs
-        
+
     """
     headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
     payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
@@ -64,7 +70,7 @@ def call_api(model: str, messages: list, max_tokens: int, tools: list = None):
         payload["top_p"] = 0.7
     if tools:
         payload["tools"] = tools
-    
+
     try:
         response = requests.post(f"{NVAI_URL}/chat/completions", headers=headers, json=payload, timeout=180)
         response.raise_for_status()
@@ -72,28 +78,35 @@ def call_api(model: str, messages: list, max_tokens: int, tools: list = None):
     except requests.exceptions.HTTPError as e:
         print(f"API Error for {model}: {e.response.status_code} - {e.response.text}")
         return None
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+    except requests.exceptions.RequestException as e:
+        print(f"Request error occurred: {e}")
         return None
 
-def call_nemoretriever_parse(base64_image: str):
+
+def call_nemoretriever_parse(base64_image: str) -> Optional[List[Dict[str, Any]]]:
     """
     Parse document layout and extract structured content using the nemoretriever-parse model.
-    
+
     Args:
         base64_image (str): Base64-encoded string representation of the image to analyze
-        
+
     Returns:
         list or None: List of extracted document objects with their metadata and bounding boxes
                      if successful, None if the API call fails or no content is extracted
 
     """
-    messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}]}]
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}]
+        }
+    ]
     tools = [{"type": "function", "function": {"name": "markdown_bbox"}}]
     response_json = call_api(model="nvidia/nemoretriever-parse", messages=messages, max_tokens=3500, tools=tools)
     if response_json:
         tool_call = response_json.get("choices", [{}])[0].get("message", {}).get("tool_calls", [{}])[0]
-        if not tool_call: return []
+        if not tool_call:
+            return []
         arguments_str = tool_call.get("function", {}).get("arguments", "[]")
         parsed_args = json.loads(arguments_str)
         if isinstance(parsed_args, list) and len(parsed_args) > 0 and isinstance(parsed_args[0], list):
@@ -101,34 +114,46 @@ def call_nemoretriever_parse(base64_image: str):
         return parsed_args
     return None
 
-def query_nemotron_for_image(base64_image: str, prompt: str):
+
+def query_nemotron_for_image(base64_image: str, prompt: str) -> str:
     """
     Query the nemotron vision-language model with an image and text prompt for analysis.
-    
+
     Args:
         base64_image (str): Base64-encoded string representation of the image to analyze
         prompt (str): Text prompt describing the analysis task or question to ask about the image
-        
+
     Returns:
         str: The model's response text if successful, or an error message if the API call fails
-        
-    """
-    messages = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}]}]
-    response_json = call_api(model="nvidia/llama-3.1-nemotron-nano-vl-8b-v1", messages=messages, max_tokens=1024)
-    return response_json.get("choices", [{}])[0].get("message", {}).get("content", "Error: No content.") if response_json else "Error during analysis."
 
-def convert_pdf_page_to_image(pdf_path, page_num, dpi=300):
+    """
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
+            ]
+        }
+    ]
+    response_json = call_api(model="nvidia/llama-3.1-nemotron-nano-vl-8b-v1", messages=messages, max_tokens=1024)
+    if response_json:
+        return response_json.get("choices", [{}])[0].get("message", {}).get("content", "Error: No content.")
+    return "Error during analysis."
+
+
+def convert_pdf_page_to_image(pdf_path: str, page_num: int, dpi: int = 300) -> Optional[Image.Image]:
     """
     Convert a specific page from a PDF document to a PIL Image object.
-    
+
     Args:
         pdf_path (str): Path to the PDF file to process
         page_num (int): Zero-based page number to convert (0 for first page)
         dpi (int, optional): Resolution in dots per inch for the output image. Defaults to 300.
-        
+
     Returns:
         PIL.Image.Image or None: RGB image object if successful, None if an error occurs
-        
+
     """
     try:
         doc = fitz.open(pdf_path)
@@ -137,44 +162,46 @@ def convert_pdf_page_to_image(pdf_path, page_num, dpi=300):
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat)
         return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    except Exception as e:
+    except (fitz.FileDataError, fitz.PageError, OSError) as e:
         print(f"Error converting page {page_num} of {pdf_path}: {e}")
         return None
 
-def encode_image_to_base64(image: Image.Image, format="PNG") -> str:
+
+def encode_image_to_base64(image: Image.Image, img_format: str = "PNG") -> str:
     """
     Convert a PIL Image object to a base64-encoded string representation.
-    
+
     This function takes a PIL Image object and converts it to a base64-encoded string
     that can be transmitted over HTTP or stored as text. The image is first saved to
     a memory buffer in the specified format, then encoded to base64.
-    
+
     Args:
         image (PIL.Image.Image): The PIL Image object to encode
-        format (str, optional): Image format for encoding (e.g., "PNG", "JPEG"). Defaults to "PNG".
-        
+        img_format (str, optional): Image format for encoding (e.g., "PNG", "JPEG"). Defaults to "PNG".
+
     Returns:
         str: Base64-encoded string representation of the image
 
     """
     buffered = io.BytesIO()
-    image.save(buffered, format=format)
-    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+    image.save(buffered, format=img_format)
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-def process_pdf(pdf_url: str):
+
+def process_pdf(pdf_url: str) -> Tuple[str, str]:
     """
     Process a single PDF file through the multimodal extraction pipeline.
-    
+
     Args:
         pdf_url (str): URL of the PDF file to process
-        
+
     Returns:
         tuple: (pdf_filename, basename)
 
     """
-    pdf_filename = pdf_url.split('/')[-1].split('?')[0]
+    pdf_filename = pdf_url.split("/")[-1].split("?")[0]
     pdf_path = os.path.join(PDF_DIR, pdf_filename)
-    response = requests.get(pdf_url)
+    response = requests.get(pdf_url, timeout=120)
     response.raise_for_status()  # Raise an exception for bad status codes
 
     with open(pdf_path, "wb") as f:
@@ -183,7 +210,8 @@ def process_pdf(pdf_url: str):
     basename = os.path.splitext(pdf_filename)[0]
     return pdf_path, basename
 
-def pdf_to_page_images(pdf_filename, dpi):
+
+def pdf_to_page_images(pdf_filename: str, dpi: int) -> List[Optional[Image.Image]]:
     """
     Convert each page of a PDF file into an image.
 
@@ -200,7 +228,8 @@ def pdf_to_page_images(pdf_filename, dpi):
         page_images.append(convert_pdf_page_to_image(pdf_filename, page_idx, dpi))
     return page_images
 
-def save_results_to_output(file_results, basename):
+
+def save_results_to_output(file_results: Dict[str, Any], basename: str) -> None:
     """
     Save the extracted results for a file to a JSON file in the extraction results directory.
 
@@ -208,12 +237,13 @@ def save_results_to_output(file_results, basename):
         file_results (dict): The results data to be saved, typically containing extracted content and metadata.
         basename (str): The base name (without extension) to use for the output JSON file.
     """
-    json_output_path = os.path.join(EXTRACTION_DIR, f"{basename}.json")    
-    with open(json_output_path, 'w', encoding='utf-8') as f:
+    json_output_path = os.path.join(EXTRACTION_DIR, f"{basename}.json")
+    with open(json_output_path, "w", encoding="utf-8") as f:
         json.dump(file_results, f)
-    print(f"\nResults saved to '{json_output_path}'")  
+    print(f"\nResults saved to '{json_output_path}'")
 
-def get_bbox_pixel_coords(bbox, image_size):
+
+def get_bbox_pixel_coords(bbox: Dict[str, float], image_size: Tuple[int, int]) -> Tuple[int, int, int, int]:
     """
     Convert normalized bbox coordinates to pixel coordinates.
 
@@ -231,7 +261,8 @@ def get_bbox_pixel_coords(bbox, image_size):
     bottom = min(height, bbox["ymax"] * height)
     return left, top, right, bottom
 
-def process_page_images_pipeline(page_images, file_results):
+
+def process_page_images_pipeline(page_images: List[Optional[Image.Image]], file_results: Dict[str, Any]) -> None:
     """
     Process each page image through the extraction and analysis pipeline.
 
@@ -244,14 +275,17 @@ def process_page_images_pipeline(page_images, file_results):
     """
 
     for page_idx, page_image in enumerate(page_images):
+        if page_image is None:
+            continue
+            
         page_num = page_idx + 1
         print(f"\nAnalyzing Page {page_num}/{len(page_images)} ...")
-                    
+
         # Stage 1: Layout Analysis with nemoretriever-parse
         print("[Stage 1] Calling nemoretriever-parse for layout analysis...")
         b64_page_image = encode_image_to_base64(page_image)
         extracted_data = call_nemoretriever_parse(b64_page_image)
-        
+
         page_entry = {"page_number": page_num, "status": "Layout extraction successful", "content": []}
         if extracted_data is None:
             page_entry["status"] = "Layout extraction failed"
@@ -280,7 +314,7 @@ def process_page_images_pipeline(page_images, file_results):
                     item_metadata["data"] = {"error": "Invalid bounding box"}
                     page_entry["content"].append(item_metadata)
                     continue
-                
+
                 left, top, right, bottom = get_bbox_pixel_coords(bbox, page_image.size)
 
                 if left >= right or top >= bottom:
@@ -291,10 +325,10 @@ def process_page_images_pipeline(page_images, file_results):
                 # Crop the image and show it
                 crop_box = (left, top, right, bottom)
                 cropped_img = page_image.crop(crop_box)
-                print(f"- Cropped image patch for analysis:")
-                
+                print("- Cropped image patch for analysis:")
+
                 b64_cropped = encode_image_to_base64(cropped_img)
-                
+
                 # Step 2a: Triage/Classification
                 classify_prompt = (
                     "Analyze the image patch and classify it as either 'Infographics' or 'Other'. "
@@ -306,10 +340,10 @@ def process_page_images_pipeline(page_images, file_results):
                     b64_cropped, classify_prompt
                 ).lower().strip().replace("'", "").replace('"', '')
                 print(f"- VLM Classification: '{specific_classification}'")
-                
+
                 analysis_path = "infographics" if "infographics" in specific_classification.lower() else "other"
-                item['sub_type'] = analysis_path
-                
+                item["sub_type"] = analysis_path
+
                 # Step 2b: Deep Analysis
                 analysis_prompt = (
                     "Your task is to analyze the provided infographic image and describe its content. "
@@ -318,40 +352,40 @@ def process_page_images_pipeline(page_images, file_results):
                     if analysis_path == "infographics"
                     else "Describe this image in detail."
                 )
-                print(f"- Running deep analysis...")
+                print("- Running deep analysis...")
                 analysis_result = query_nemotron_for_image(b64_cropped, analysis_prompt)
-    
+
                 item_metadata["data"] = {
                     "content_classification": specific_classification,
                     "analysis_result": analysis_result
                 }
-            
+
             elif item_type == "Table":
                 print(f"[Stage 2] Found Table (ID: {item_idx}). Parsing and reconstructing table...")
-                
+
                 # Show the detected table patch for context
                 bbox = item.get("bbox")
                 if bbox:
                     left, top, right, bottom = get_bbox_pixel_coords(bbox, page_image.size)
                     if left < right and top < bottom:
                         crop_box = (left, top, right, bottom)
-                        cropped_table_img = page_image.crop(crop_box)
-                        print(f"- Cropped table patch for context:")
-                
+                        # cropped_table_img = page_image.crop(crop_box)  # Unused variable removed
+                        print("- Cropped table patch for context:")
+
                 latex_code = item.get("text", "")
                 if not latex_code:
                     item_metadata["data"] = {"error": "Empty LaTeX content for table"}
                 else:
                     try:
                         # Parse the LaTeX tabular content
-                        content_str = latex_code.split('\\begin{tabular}')[1].split('\\end{tabular}')[0]
-                        content_str = content_str.split('}', 1)[1].strip()                    
-                        rows = [r.strip() for r in content_str.split('\\\\') if r.strip()]
+                        content_str = latex_code.split("\\begin{tabular}")[1].split("\\end{tabular}")[0]
+                        content_str = content_str.split("}", 1)[1].strip()
+                        rows = [r.strip() for r in content_str.split("\\\\") if r.strip()]
                         table_data = [
-                            [cell.replace('**', '').strip() for cell in row.split('&')]
+                            [cell.replace("**", "").strip() for cell in row.split("&")]
                             for row in rows
                         ]
-                        
+
                         if not table_data:
                             raise ValueError("No data could be parsed from the LaTeX string.")
 
@@ -359,25 +393,25 @@ def process_page_images_pipeline(page_images, file_results):
                         header = table_data[0]
                         num_columns = len(header)
                         normalized_body = []
-                        for row in table_data[1:]:
-                            if len(row) != num_columns:
-                                while len(row) < num_columns:
-                                    row.append('')
-                                if len(row) > num_columns:
-                                    row = row[:num_columns]
-                            normalized_body.append(row)
+                        for table_row in table_data[1:]:
+                            if len(table_row) != num_columns:
+                                while len(table_row) < num_columns:
+                                    table_row.append("")
+                                if len(table_row) > num_columns:
+                                    table_row = table_row[:num_columns]
+                            normalized_body.append(table_row)
 
                         # Create a pandas DataFrame
                         df = pd.DataFrame(normalized_body, columns=header)
 
                         # Convert the clean DataFrame to HTML and display it
-                        print(f"- Reconstructed HTML Table:")
+                        print("- Reconstructed HTML Table:")
                         html_table = df.to_html(index=False, border=1, classes="table table-striped")
-                        
+
                         # Store the final HTML in the results
                         item_metadata["data"] = {"type": "tabular", "content_html": html_table}
 
-                    except Exception as e:
+                    except (ValueError, IndexError) as e:
                         print(f"- ERROR: Failed to parse table data. Details: {e}")
                         item_metadata["data"] = {
                             "error": f"Could not parse content: {e}",
@@ -386,12 +420,13 @@ def process_page_images_pipeline(page_images, file_results):
             else:
                 # Fallback for any other type, like 'Text'
                 item_metadata["data"] = {"type": "textual", "content": item.get("text", "")}
-            
+
             page_entry["content"].append(item_metadata)
-            
+
         file_results["pages"].append(page_entry)
 
-def separate_contents_on_modality(file_results, basename):
+
+def separate_contents_on_modality(basename: str) -> None:
     """
     Separates and categorizes extracted content from all pages in the extraction results directory
     by modality (table, image, text, other), and saves the aggregated result as a JSON file.
@@ -411,9 +446,9 @@ def separate_contents_on_modality(file_results, basename):
 
     # Predefine the modality keys and their extraction logic for efficiency
     modality_map = {
-        "Table":   lambda data: data.get("content_html", ""),
+        "Table": lambda data: data.get("content_html", ""),
         "Picture": lambda data: data.get("analysis_result", ""),
-        "Text":    lambda data: data.get("content", "")
+        "Text": lambda data: data.get("content", "")
     }
 
     for extracted_file in os.listdir(EXTRACTION_DIR):
@@ -454,10 +489,20 @@ def separate_contents_on_modality(file_results, basename):
     with open(json_output_path, "w", encoding="utf-8") as f:
         json.dump(separated_modality_results, f, ensure_ascii=False, indent=4)
 
+
+def format_missing_file_error(file_path: str) -> str:
+    """Format error message for missing file."""
+    return f"Missing required file: {file_path}. Please ensure the file exists before running the script."
+
+
 def main() -> None:
-    if not os.path.exists(os.path.join(PDF_DIR, "pdf_urls.jsonl")):
-        raise FileNotFoundError(format_missing_file_error(os.path.join(PDF_DIR, "pdf_urls.jsonl")))
-    urls = pd.read_json(path_or_buf=os.path.join(PDF_DIR, "pdf_urls.jsonl"), lines=True)[0].tolist()
+    """Main function to run the multimodal extraction pipeline."""
+    pdf_urls_path = os.path.join(PDF_DIR, "pdf_urls.jsonl")
+    if not os.path.exists(pdf_urls_path):
+        error_msg = format_missing_file_error(pdf_urls_path)
+        raise FileNotFoundError(error_msg)
+        
+    urls = pd.read_json(path_or_buf=pdf_urls_path, lines=True)[0].tolist()
 
     for pdf_url in urls:
         pdf_filename, basename = process_pdf(pdf_url)
@@ -471,16 +516,15 @@ def main() -> None:
         print(f" Converting '{pdf_filename}' to images...")
         page_images = pdf_to_page_images(pdf_filename, PDF_DPI)
         print(f"Converted {len(page_images)} pages.")
-        
-        #Run through extraction pipeline
+
+        # Run through extraction pipeline
         process_page_images_pipeline(page_images, file_results)
-        
-        #Save results of extraction
+
+        # Save results of extraction
         save_results_to_output(file_results, basename)
 
-        #Separate and categorize results of extraction
-        separate_contents_on_modality(file_results, basename)
-
+        # Separate and categorize results of extraction
+        separate_contents_on_modality(basename)
 
 
 if __name__ == "__main__":
