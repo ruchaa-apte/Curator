@@ -17,7 +17,7 @@ import io
 import json
 import os
 import shutil
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional
 
 import fitz  # PyMuPDF
 import pandas as pd
@@ -48,8 +48,8 @@ os.makedirs(SEPARATED_MODALITY_DIR, exist_ok=True)
 
 
 def call_api(
-    model: str, messages: List[Dict[str, Any]], max_tokens: int, tools: Optional[List[Dict[str, Any]]] = None
-) -> Optional[Dict[str, Any]]:
+    model: str, messages: list[dict[str, Any]], max_tokens: int, tools: list[dict[str, Any]] | None = None
+) -> dict[str, Any] | None:
     """
     Make an API call to the NVIDIA AI chat completions endpoint.
 
@@ -83,7 +83,7 @@ def call_api(
         return None
 
 
-def call_nemoretriever_parse(base64_image: str) -> Optional[List[Dict[str, Any]]]:
+def call_nemoretriever_parse(base64_image: str) -> list[dict[str, Any]] | None:
     """
     Parse document layout and extract structured content using the nemoretriever-parse model.
 
@@ -142,7 +142,7 @@ def query_nemotron_for_image(base64_image: str, prompt: str) -> str:
     return "Error during analysis."
 
 
-def convert_pdf_page_to_image(pdf_path: str, page_num: int, dpi: int = 300) -> Optional[Image.Image]:
+def convert_pdf_page_to_image(pdf_path: str, page_num: int, dpi: int = 300) -> Image.Image | None:
     """
     Convert a specific page from a PDF document to a PIL Image object.
 
@@ -188,7 +188,7 @@ def encode_image_to_base64(image: Image.Image, img_format: str = "PNG") -> str:
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 
-def process_pdf(pdf_url: str) -> Tuple[str, str]:
+def process_pdf(pdf_url: str) -> tuple[str, str]:
     """
     Process a single PDF file through the multimodal extraction pipeline.
 
@@ -211,7 +211,7 @@ def process_pdf(pdf_url: str) -> Tuple[str, str]:
     return pdf_path, basename
 
 
-def pdf_to_page_images(pdf_filename: str, dpi: int) -> List[Optional[Image.Image]]:
+def pdf_to_page_images(pdf_filename: str, dpi: int) -> list[Image.Image | None]:
     """
     Convert each page of a PDF file into an image.
 
@@ -229,7 +229,7 @@ def pdf_to_page_images(pdf_filename: str, dpi: int) -> List[Optional[Image.Image
     return page_images
 
 
-def save_results_to_output(file_results: Dict[str, Any], basename: str) -> None:
+def save_results_to_output(file_results: dict[str, Any], basename: str) -> None:
     """
     Save the extracted results for a file to a JSON file in the extraction results directory.
 
@@ -243,7 +243,7 @@ def save_results_to_output(file_results: Dict[str, Any], basename: str) -> None:
     print(f"\nResults saved to '{json_output_path}'")
 
 
-def get_bbox_pixel_coords(bbox: Dict[str, float], image_size: Tuple[int, int]) -> Tuple[int, int, int, int]:
+def get_bbox_pixel_coords(bbox: dict[str, float], image_size: tuple[int, int]) -> tuple[int, int, int, int]:
     """
     Convert normalized bbox coordinates to pixel coordinates.
 
@@ -262,7 +262,7 @@ def get_bbox_pixel_coords(bbox: Dict[str, float], image_size: Tuple[int, int]) -
     return left, top, right, bottom
 
 
-def process_page_images_pipeline(page_images: List[Optional[Image.Image]], file_results: Dict[str, Any]) -> None:
+def process_page_images_pipeline(page_images: list[Image.Image | None], file_results: dict[str, Any]) -> None:
     """
     Process each page image through the extraction and analysis pipeline.
 
@@ -277,7 +277,7 @@ def process_page_images_pipeline(page_images: List[Optional[Image.Image]], file_
     for page_idx, page_image in enumerate(page_images):
         if page_image is None:
             continue
-            
+
         page_num = page_idx + 1
         print(f"\nAnalyzing Page {page_num}/{len(page_images)} ...")
 
@@ -369,7 +369,6 @@ def process_page_images_pipeline(page_images: List[Optional[Image.Image]], file_
                     left, top, right, bottom = get_bbox_pixel_coords(bbox, page_image.size)
                     if left < right and top < bottom:
                         crop_box = (left, top, right, bottom)
-                        # cropped_table_img = page_image.crop(crop_box)  # Unused variable removed
                         print("- Cropped table patch for context:")
 
                 latex_code = item.get("text", "")
@@ -387,19 +386,20 @@ def process_page_images_pipeline(page_images: List[Optional[Image.Image]], file_
                         ]
 
                         if not table_data:
-                            raise ValueError("No data could be parsed from the LaTeX string.")
+                            error_msg = "No data could be parsed from the LaTeX string."
+                            raise ValueError(error_msg)
 
                         # Normalize row lengths
                         header = table_data[0]
                         num_columns = len(header)
                         normalized_body = []
-                        for table_row in table_data[1:]:
-                            if len(table_row) != num_columns:
-                                while len(table_row) < num_columns:
-                                    table_row.append("")
-                                if len(table_row) > num_columns:
-                                    table_row = table_row[:num_columns]
-                            normalized_body.append(table_row)
+                        for current_row in table_data[1:]:
+                            if len(current_row) != num_columns:
+                                while len(current_row) < num_columns:
+                                    current_row.append("")
+                                if len(current_row) > num_columns:
+                                    current_row = current_row[:num_columns]
+                            normalized_body.append(current_row)
 
                         # Create a pandas DataFrame
                         df = pd.DataFrame(normalized_body, columns=header)
@@ -432,7 +432,6 @@ def separate_contents_on_modality(basename: str) -> None:
     by modality (table, image, text, other), and saves the aggregated result as a JSON file.
 
     Args:
-        file_results (dict): The original extraction results for a file (not used in this function, but kept for compatibility).
         basename (str): The base name (without extension) of the source file, used for naming the output JSON.
 
     Returns:
@@ -501,7 +500,7 @@ def main() -> None:
     if not os.path.exists(pdf_urls_path):
         error_msg = format_missing_file_error(pdf_urls_path)
         raise FileNotFoundError(error_msg)
-        
+
     urls = pd.read_json(path_or_buf=pdf_urls_path, lines=True)[0].tolist()
 
     for pdf_url in urls:
