@@ -15,6 +15,7 @@ import shutil
 SCRIPT_DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.path.join(SCRIPT_DIR_PATH, "source")
 EXTRACTION_DIR = os.path.join(SCRIPT_DIR_PATH, "extraction_results") 
+SEPARATED_MODALITY_DIR = os.path.join(SCRIPT_DIR_PATH, "categorized_results")
 NVAI_URL = "https://integrate.api.nvidia.com/v1"
 PDF_DPI = 300
 
@@ -26,6 +27,10 @@ if not API_KEY:
 if os.path.exists(EXTRACTION_DIR):
     shutil.rmtree(EXTRACTION_DIR)
 os.makedirs(EXTRACTION_DIR, exist_ok=True)
+
+if os.path.exists(SEPARATED_MODALITY_DIR):
+    shutil.rmtree(SEPARATED_MODALITY_DIR)
+os.makedirs(SEPARATED_MODALITY_DIR, exist_ok=True)
 
 def call_api(model: str, messages: list, max_tokens: int, tools: list = None):
     """
@@ -375,6 +380,69 @@ def process_page_images_pipeline(page_images, file_results):
             
         file_results["pages"].append(page_entry)
 
+def separate_contents_on_modality(file_results, basename):
+    """
+    Separates and categorizes extracted content from all pages in the extraction results directory
+    by modality (table, image, text, other), and saves the aggregated result as a JSON file.
+
+    Args:
+        file_results (dict): The original extraction results for a file (not used in this function, but kept for compatibility).
+        basename (str): The base name (without extension) of the source file, used for naming the output JSON.
+
+    Returns:
+        None. The function writes the categorized results to disk as a JSON file.
+    """
+    json_output_path = os.path.join(SEPARATED_MODALITY_DIR, f"{basename}.json")
+    separated_modality_results = {
+        "source_filename": basename,
+        "pages": []
+    }
+
+    # Predefine the modality keys and their extraction logic for efficiency
+    modality_map = {
+        "Table":   lambda data: data.get("content_html", ""),
+        "Picture": lambda data: data.get("analysis_result", ""),
+        "Text":    lambda data: data.get("content", "")
+    }
+
+    for extracted_file in os.listdir(EXTRACTION_DIR):
+        extracted_file_path = os.path.join(EXTRACTION_DIR, extracted_file)
+        with open(extracted_file_path, "r", encoding="utf-8") as f:
+            extracted_data = json.load(f)
+        for page in extracted_data.get("pages", []):
+            if page.get("status") == "Layout extraction failed":
+                continue  # Skip failed pages
+
+            # Use dicts for clarity and to avoid repeated code
+            modality_lists = {
+                "table_text_extraction": [],
+                "image_text_extraction": [],
+                "text_text_extraction": [],
+                "other_text_extraction": []
+            }
+
+            for item in page.get("content", []):
+                item_type = item.get("metadata", {}).get("type")
+                data = item.get("data", {})
+                if item_type in modality_map:
+                    if item_type == "Table":
+                        modality_lists["table_text_extraction"].append(modality_map["Table"](data))
+                    elif item_type == "Picture":
+                        modality_lists["image_text_extraction"].append(modality_map["Picture"](data))
+                    elif item_type == "Text":
+                        modality_lists["text_text_extraction"].append(modality_map["Text"](data))
+                else:
+                    # For any other type, treat as "other"
+                    modality_lists["other_text_extraction"].append(data.get("content", ""))
+
+            separated_modality_results["pages"].append({
+                "page_number": page.get("page_number"),
+                "content": modality_lists
+            })
+
+    with open(json_output_path, "w", encoding="utf-8") as f:
+        json.dump(separated_modality_results, f, ensure_ascii=False, indent=4)
+
 def main() -> None:
     if not os.path.exists(os.path.join(PDF_DIR, "pdf_urls.jsonl")):
         raise FileNotFoundError(format_missing_file_error(os.path.join(PDF_DIR, "pdf_urls.jsonl")))
@@ -399,7 +467,10 @@ def main() -> None:
         #Save results of extraction
         save_results_to_output(file_results, basename)
 
-        #Separate and categorizeresults of extraction
+        #Separate and categorize results of extraction
+        separate_contents_on_modality(file_results, basename)
+
+
 
 if __name__ == "__main__":
     main()
